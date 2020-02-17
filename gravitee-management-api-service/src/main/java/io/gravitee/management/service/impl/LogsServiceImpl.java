@@ -198,6 +198,60 @@ public class LogsServiceImpl implements LogsService {
     }
 
     @Override
+    public SearchLogResponse findPlatform(LogQuery query) {
+        try {
+            final String field = query.getField() == null ? "@timestamp" : query.getField();
+            TabularResponse response = logRepository.query(
+                    QueryBuilders.tabular()
+                            .page(query.getPage())
+                            .size(query.getSize())
+                            .query(query.getQuery())
+                            .sort(SortBuilder.on(field, query.isOrder() ? Order.ASC : Order.DESC, null))
+                            .timeRange(
+                                    DateRangeBuilder.between(query.getFrom(), query.getTo()),
+                                    IntervalBuilder.interval(query.getInterval())
+                            )
+//                            .root("application", application)
+                            .build());
+
+            SearchLogResponse<PlatformRequestItem> logResponse = new SearchLogResponse<>(response.getSize());
+
+            // Transform repository logs
+            logResponse.setLogs(response.getLogs().stream()
+                    .map(this::toPlatformRequestItem)
+                    .collect(Collectors.toList()));
+
+            // Add metadata (only if they are results)
+            if (response.getSize() > 0) {
+                Map<String, Map<String, String>> metadata = new HashMap<>();
+
+                logResponse.getLogs().forEach(logItem -> {
+                    String api = logItem.getApi();
+                    String application = logItem.getApplication();
+                    String plan = logItem.getPlan();
+
+                    if (api != null) {
+                        metadata.computeIfAbsent(api, getAPIMetadata(api));
+                    }
+                    if (application != null) {
+                        metadata.computeIfAbsent(application, getApplicationMetadata(application));
+                    }
+                    if (plan != null) {
+                        metadata.computeIfAbsent(plan, getPlanMetadata(plan));
+                    }
+                });
+
+                logResponse.setMetadata(metadata);
+            }
+
+            return logResponse;
+        } catch (AnalyticsException ae) {
+            logger.error("Unable to retrieve logs: ", ae);
+            throw new TechnicalManagementException("Unable to retrieve logs", ae);
+        }
+    }
+
+    @Override
     public ApplicationRequest findApplicationLog(String id, Long timestamp) {
         try {
             return toApplicationRequest(logRepository.findById(id, timestamp));
@@ -389,6 +443,23 @@ public class LogsServiceImpl implements LogsService {
 
     private String getName(Object map) {
         return map == null ? "" : ((Map) map).get("name").toString();
+    }
+
+    private PlatformRequestItem toPlatformRequestItem(io.gravitee.repository.log.model.Log log) {
+        PlatformRequestItem req = new PlatformRequestItem();
+        req.setId(log.getId());
+        req.setTransactionId(log.getTransactionId());
+        req.setApi(log.getApi());
+        req.setApplication(log.getApplication());
+        req.setMethod(log.getMethod());
+        req.setPath(new QueryStringDecoder(log.getUri()).path());
+        req.setPlan(log.getPlan());
+        req.setResponseTime(log.getResponseTime());
+        req.setStatus(log.getStatus());
+        req.setTimestamp(log.getTimestamp());
+        req.setEndpoint(log.getEndpoint() != null);
+        req.setUser(log.getUser());
+        return req;
     }
 
     private ApiRequestItem toApiRequestItem(io.gravitee.repository.log.model.Log log) {
